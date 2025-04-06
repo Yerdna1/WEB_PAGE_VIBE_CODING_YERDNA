@@ -1,335 +1,436 @@
-# app.py - React Website Builder (CDN Preview) with Sidebar Chat, Tabs, and New Window Link
+# app.py - Multi-Agent Game Generation System
 import streamlit as st
-import streamlit as st # Ensure streamlit is imported before use
 import google.generativeai as genai
 import os
 from pathlib import Path
 import json
 import time
-from dotenv import load_dotenv # Re-added dotenv import
-import re # For regex used in CSS injection
-import urllib.parse # <<< ADDED IMPORT for URL encoding
+from dotenv import load_dotenv
+import re
+import shutil # For potentially cleaning workspace
+from typing import TypedDict, List, Dict, Optional, Sequence
+from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver # For potential future state saving
 
 # --- Configuration ---
-st.set_page_config(layout="wide", page_title="AI Tvorca Webstránok (React CDN)")
-load_dotenv() # Re-added load_dotenv() call
+st.set_page_config(layout="wide", page_title="AI Generátor Hier")
+load_dotenv()
 
 # --- Constants ---
-WORKSPACE_DIR = Path("workspace") # Directory for generated web files
+WORKSPACE_DIR = Path("workspace")
 WORKSPACE_DIR.mkdir(exist_ok=True)
-CSS_FILENAME = "style.css" # Conventional CSS filename for injection
+MAX_GAMES = 16 # Target number of games
 
 # --- Gemini API Configuration ---
 try:
-    # Use os.getenv for API key from .env file
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
         st.error("🔴 Google API kľúč nenájdený. Prosím, uistite sa, že GOOGLE_API_KEY je nastavený vo vašom .env súbore.")
         st.stop()
     genai.configure(api_key=api_key)
-
-    # Use os.getenv for model name from .env file, otherwise default
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25") # Default fallback
-
-    st.sidebar.caption(f"Používaný model: `{model_name}`")
+    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest") # Using a potentially faster model
     model = genai.GenerativeModel(model_name)
+    st.sidebar.caption(f"Používaný model: `{model_name}`")
 except Exception as e:
     st.error(f"🔴 Nepodarilo sa nakonfigurovať Gemini alebo načítať model '{model_name}' pomocou .env: {e}")
     st.stop()
 
-# --- Session State Initialization ---
-if "messages" not in st.session_state: st.session_state.messages = []
-if "selected_file" not in st.session_state: st.session_state.selected_file = None
-if "file_content" not in st.session_state: st.session_state.file_content = ""
-if "rendered_html" not in st.session_state: st.session_state.rendered_html = ""
-# rendered_for_{filename} marker is added/removed dynamically
+# --- LangGraph State Definition ---
+class AgentState(TypedDict):
+    theme: str
+    game_concepts: Optional[List[str]]
+    game_plan: Optional[List[Dict[str, str]]] # List of {"concept": "...", "instruction": "..."}
+    current_game_index: int
+    worker_output: Optional[List[Dict[str, str]]] # Output from the worker agent for the current game
+    saved_games: List[Dict[str, str]] # List of {"name": "...", "folder": "..."}
+    log_messages: List[str]
+    error: Optional[str]
 
-# --- Helper Functions --- (Keep as before) ---
-def get_workspace_files():
-    try: return sorted([f.name for f in WORKSPACE_DIR.iterdir() if f.is_file()])
-    except Exception as e: st.error(f"Chyba pri vypisovaní súborov v pracovnom priestore: {e}"); return []
+# --- Helper Functions ---
+def sanitize_foldername(name: str) -> str:
+    """Creates a safe folder name from a game concept."""
+    name = re.sub(r'[^\w\s-]', '', name).strip().lower()
+    name = re.sub(r'[-\s]+', '_', name)
+    return name if name else "untitled_game"
 
-def read_file_content(filename):
-    if not filename: return None
-    if ".." in filename or filename.startswith(("/", "\\")): return None
-    filepath = WORKSPACE_DIR / filename
+def save_game_files(game_name: str, game_index: int, files_data: List[Dict[str, str]]) -> Optional[str]:
+    """Saves generated files to a dedicated game folder."""
+    folder_name = f"{sanitize_foldername(game_name)}_{game_index:02d}"
+    game_dir = WORKSPACE_DIR / folder_name
     try:
-        with open(filepath, "r", encoding="utf-8") as f: return f.read()
-    except FileNotFoundError: return None
-    except Exception as e: st.error(f"Chyba pri čítaní súboru '{filename}': {e}"); return None
-
-def save_file_content(filename, content):
-    if not filename: return False
-    if ".." in filename or filename.startswith(("/", "\\")): return False
-    filepath = WORKSPACE_DIR / filename
-    try:
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-        with open(filepath, "w", encoding="utf-8") as f: f.write(content); return True
-    except Exception as e: st.error(f"Chyba pri ukladaní súboru '{filename}': {e}"); return False
-
-def delete_file(filename):
-    if not filename: return False
-    if ".." in filename or filename.startswith(("/", "\\")): return False
-    filepath = WORKSPACE_DIR / filename
-    try:
-        os.remove(filepath)
-        if st.session_state.selected_file == filename: # Clear state if selected file is deleted
-            st.session_state.selected_file = None
-            st.session_state.file_content = ""
-            st.session_state.rendered_html = ""
-            st.session_state.pop(f"rendered_for_{filename}", None)
-        return True
-    except FileNotFoundError: st.warning(f"Súbor '{filename}' nenájdený na vymazanie."); return False
-    except Exception as e: st.error(f"Chyba pri mazaní súboru '{filename}': {e}"); return False
-
-# --- AI Interaction & File Ops --- (Keep parse_and_execute_commands as before) ---
-def parse_and_execute_commands(ai_response_text):
-    parsed_commands = []
-    try:
-        response_text_cleaned = ai_response_text.strip()
-        if response_text_cleaned.startswith("```json"): response_text_cleaned = response_text_cleaned[7:-3].strip()
-        elif response_text_cleaned.startswith("```"): response_text_cleaned = response_text_cleaned[3:-3].strip()
-        commands = json.loads(response_text_cleaned) # Strict parsing
-        if not isinstance(commands, list): return [{"action": "chat", "content": f"AI (Non-list JSON): {ai_response_text}"}]
-        for command in commands:
-            if not isinstance(command, dict): parsed_commands.append({"action": "chat", "content": f"Skipped: {command}"}); continue
-            action=command.get("action"); filename=command.get("filename"); content=command.get("content")
-            parsed_commands.append(command)
-            if action=="create_update":
-                if filename and content is not None:
-                    if not save_file_content(filename, content): st.warning(f"Nepodarilo sa uložiť '{filename}'.")
-                else: st.warning(f"⚠️ Neplatný 'create_update': {command}")
-            elif action=="delete":
-                if filename: delete_file(filename)
-                else: st.warning(f"⚠️ Neplatný 'delete': {command}")
-            elif action=="chat": pass
-            else: st.warning(f"⚠️ Neznáma akcia '{action}': {command}")
-        return parsed_commands
-    except json.JSONDecodeError as e:
-        st.error(f"🔴 Neplatný JSON: {e}\nText:\n'{ai_response_text[:500]}...'")
-        return [{"action": "chat", "content": f"AI(Invalid JSON): {ai_response_text}"}]
+        game_dir.mkdir(parents=True, exist_ok=True)
+        for file_info in files_data:
+            filename = file_info.get("filename")
+            content = file_info.get("content")
+            if filename and content is not None:
+                # Basic security check
+                if ".." in filename or filename.startswith(("/", "\\")):
+                    st.warning(f"⚠️ Preskočený nebezpečný názov súboru v hre {game_name}: {filename}")
+                    continue
+                filepath = game_dir / filename
+                filepath.parent.mkdir(parents=True, exist_ok=True) # Ensure subdirs within game folder are created
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(content)
+            else:
+                 st.warning(f"⚠️ Chýbajúce 'filename' alebo 'content' v dátach pre hru {game_name}: {file_info}")
+        return str(game_dir) # Return the path to the created directory
     except Exception as e:
-        st.error(f"🔴 Chyba pri spracovaní príkazov: {e}")
-        return [{"action": "chat", "content": f"Error processing commands: {e}"}]
+        st.error(f"🔴 Chyba pri ukladaní súborov pre hru '{game_name}' do '{folder_name}': {e}")
+        return None
 
-# --- Keep call_gemini as before (with strict prompt for web/React CDN) ---
-def call_gemini(history):
-    safe_history = []
-    for msg in history:
-        if isinstance(msg, dict) and "role" in msg and "content" in msg:
-            safe_history.append({"role": msg["role"], "content": str(msg["content"])})
+def call_llm(prompt: str, is_json_output: bool = True) -> str:
+    """ Helper function to call the LLM and handle potential errors. """
+    try:
+        # Simple retry mechanism
+        for attempt in range(2):
+            try:
+                response = model.generate_content(prompt)
+                # Basic validation if JSON is expected
+                if is_json_output:
+                    cleaned_response = response.text.strip()
+                    if cleaned_response.startswith("```json"):
+                        cleaned_response = cleaned_response[7:-3].strip()
+                    elif cleaned_response.startswith("```"):
+                         cleaned_response = cleaned_response[3:-3].strip()
+                    # Try parsing to catch invalid JSON early
+                    json.loads(cleaned_response)
+                    return cleaned_response
+                else:
+                    return response.text
+            except Exception as inner_e:
+                if "429" in str(inner_e) and attempt == 0:
+                    st.warning("⏳ Limit API prekročený, čakám 5 sekúnd pred opakovaním...")
+                    time.sleep(5)
+                    continue # Retry
+                elif is_json_output and isinstance(inner_e, json.JSONDecodeError):
+                     st.warning(f"⚠️ LLM vrátilo neplatný JSON, skúšam znova... Chyba: {inner_e}")
+                     if attempt == 0: continue # Retry on first JSON error
+                     else: raise # Raise error on second JSON failure
+                else:
+                    raise # Re-raise other errors or errors on second attempt
+        # If loop finishes without returning/raising (e.g., due to retries)
+        raise Exception("LLM volanie zlyhalo po opakovaniach.")
 
-    instruction = """
-    You are an AI assistant that helps users create web pages and simple web applications.
-    Your goal is to generate HTML, CSS, JavaScript code, or self-contained React preview files.
-    Based on the user's request, you MUST respond ONLY with a valid JSON array containing file operation objects.
+    except Exception as e:
+        st.error(f"🔴 Volanie LLM zlyhalo: {e}")
+        # Return an error structure if JSON was expected
+        if is_json_output:
+            return json.dumps([{"action": "chat", "content": f"Chyba volania LLM: {e}"}])
+        else:
+            return f"Chyba volania LLM: {e}"
 
-    **JSON FORMATTING RULES (VERY IMPORTANT):**
-    1.  The entire response MUST be a single JSON array starting with '[' and ending with ']'.
-    2.  All keys (like "action", "filename", "content") MUST be enclosed in **double quotes** (").
-    3.  All string values (like filenames and the large code content) MUST be enclosed in **double quotes** ("). Single quotes (') or backticks (`) are NOT ALLOWED for keys or string values in the JSON structure.
-    4.  Special characters within the "content" string (like newlines, double quotes inside the code) MUST be properly escaped (e.g., use '\\n' for newlines, '\\"' for double quotes).
+# --- Agent Node Functions ---
 
-    **EXAMPLE of Correct JSON action object:**
-    {
-        "action": "create_update",
-        "filename": "example.html",
-        "content": "<!DOCTYPE html>\\n<html>\\n<head>\\n  <title>Example</title>\\n</head>\\n<body>\\n  <h1>Hello World!</h1>\\n  <p>This contains a \\"quote\\" example.</p>\\n</body>\\n</html>"
-    }
+def games_planner_node(state: AgentState) -> AgentState:
+    """Generates a list of game concepts based on the theme."""
+    theme = state["theme"]
+    log_messages = state.get("log_messages", [])
+    log_messages.append(f"🤖 GAMES_PLANNER: Generujem {MAX_GAMES} konceptov hier pre tému '{theme}'...")
+    st.session_state.log_messages = log_messages # Update UI immediately
 
-    Possible action objects in the JSON array:
-    - {"action": "create_update", "filename": "path/to/file.ext", "content": "file content string here..."}
-    - {"action": "delete", "filename": "path/to/file.ext"}
-    - {"action": "chat", "content": "Your helpful answer string here..."}
+    prompt = f"""
+    Si kreatívny plánovač hier. Vytvor zoznam {MAX_GAMES} jednoduchých konceptov webových hier (HTML, CSS, JS) na tému '{theme}'.
+    Zameraj sa na jednoduché, dobre známe herné mechaniky.
+    Odpovedz IBA platným JSON poľom reťazcov obsahujúcim názvy herných konceptov.
 
-    **VERY IMPORTANT - UPDATING FILES:**
-    If the user asks you to modify an existing file (e.g., "add a footer to index.html", "change the button color in style.css"), you MUST provide the **ENTIRE**, complete, updated file content within the 'content' field of the 'create_update' action object, following all JSON formatting rules. Do NOT provide only the changed lines or a diff.
-
-    **REACT PREVIEWS:**
-    If the user asks for a simple React component/app to preview, generate a SINGLE self-contained HTML file (e.g., 'react_preview.html') using 'create_update'. This file MUST use CDN links for React/ReactDOM/Babel, have a <div id="root">, include JSX in a <script type="text/babel"> tag, render to the root, and include CSS in <style> tags within the <head>. (Ensure valid JSON).
-
-    **GENERAL:**
-    Use standard filenames ('index.html', 'style.css', 'script.js'). The standard CSS file for injection is 'style.css'. If unsure, ask the user. Respond ONLY with the JSON array. Use 'chat' action for questions or explanations.
+    Príklad pre tému 'vesmír':
+    ["Hádaj planétu", "Vesmírny kliker", "Pexeso s kozmickými loďami", "Kvíz o súhvezdiach", ...]
     """
-    current_files = get_workspace_files()
-    file_list_prompt = f"Current files in workspace: {', '.join(current_files) if current_files else 'None'}"
-    gemini_history = []
-    gemini_history.append({"role": "user", "parts": [{"text": f"{instruction}\n{file_list_prompt}"}]})
-    gemini_history.append({"role": "model", "parts": [{"text": '[{"action": "chat", "content": "Okay, I understand the strict JSON formatting rules (double quotes, escaping) and the need to provide full file content on updates. I will respond only with the valid JSON array. Ready."}]'}]})
-    for msg in safe_history:
-        role = "user" if msg["role"] == "user" else "model"; content_text = msg["content"]
-        if role == "model" and isinstance(msg["content"], list):
-            try: content_text = json.dumps(msg["content"])
-            except Exception: content_text = str(msg["content"])
-        gemini_history.append({"role": role, "parts": [{"text": content_text}]})
     try:
-        response = model.generate_content(gemini_history); return response.text
+        response_text = call_llm(prompt, is_json_output=True)
+        game_concepts = json.loads(response_text)
+        if not isinstance(game_concepts, list) or not all(isinstance(item, str) for item in game_concepts):
+            raise ValueError("LLM nevrátilo platný zoznam názvov hier.")
+        log_messages.append(f"✅ GAMES_PLANNER: Koncepty hier vygenerované ({len(game_concepts)} hier).")
+        return {**state, "game_concepts": game_concepts[:MAX_GAMES], "log_messages": log_messages, "error": None}
     except Exception as e:
-        if "429" in str(e): st.error("🔴 Prekročená kvóta/limit požiadaviek Gemini API.")
-        else: st.error(f"🔴 Volanie Gemini API zlyhalo: {e}")
-        error_content = f"Error calling AI: {str(e)}".replace('"',"'"); return json.dumps([{"action": "chat", "content": error_content}])
+        error_msg = f"🔴 GAMES_PLANNER zlyhal: {e}"
+        log_messages.append(error_msg)
+        return {**state, "log_messages": log_messages, "error": error_msg}
 
-# --- Streamlit UI Layout ---
+def profesor_planner_node(state: AgentState) -> AgentState:
+    """Refines the game concepts with aesthetic instructions."""
+    game_concepts = state.get("game_concepts")
+    log_messages = state.get("log_messages", [])
+    if not game_concepts:
+        error_msg = "🔴 PROFESOR_PLANNER: Chýbajú herné koncepty."
+        log_messages.append(error_msg)
+        return {**state, "log_messages": log_messages, "error": error_msg}
 
-# --- Sidebar: Chat Interface --- (Keep as before) ---
-with st.sidebar:
-    st.header("💬 Chat s AI")
-    st.markdown("Požiadajte AI o vytvorenie alebo úpravu webových súborov (HTML, CSS, JS, React CDN náhľady).")
-    st.caption(f"Používaný model: `{model_name}`") # Display model name
-    chat_container = st.container(height=500)
-    with chat_container:
-        if st.session_state.messages:
-            for message in st.session_state.messages:
-                with st.chat_message(message["role"]):
-                    if isinstance(message.get("content"), list) and message.get("role") == "assistant":
-                        display_text = ""; chat_messages = []
-                        for command in message["content"]:
-                            if not isinstance(command, dict): continue
-                            action = command.get("action"); filename = command.get("filename")
-                            if action == "create_update": display_text += f"📝 Vytvoriť/Aktualizovať: `{filename}`\n"
-                            elif action == "delete": display_text += f"🗑️ Vymazať: `{filename}`\n"
-                            elif action == "chat": chat_messages.append(command.get('content', '...'))
-                            else: display_text += f"⚠️ {command.get('content', f'Neznáma akcia: {action}')}\n"
-                        final_display = (display_text + "\n".join(chat_messages)).strip()
-                        if not final_display: final_display = "(Žiadna akcia)"
-                        st.markdown(final_display)
-                    else: st.write(str(message.get("content", "")))
-        else: st.info("História chatu je prázdna.")
-    if prompt := st.chat_input("napr., Vytvor index.html s nadpisom"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.spinner("🧠 AI premýšľa..."):
-            ai_response_text = call_gemini(st.session_state.messages)
-            executed_commands = parse_and_execute_commands(ai_response_text)
-            st.session_state.messages.append({"role": "assistant", "content": executed_commands})
+    log_messages.append("🧑‍🏫 PROFESOR_PLANNER: Pridávam inštrukcie pre vizuálnu stránku ku každému konceptu...")
+    st.session_state.log_messages = log_messages
+
+    game_plan = []
+    for concept in game_concepts:
+        instruction = (
+            f"Vytvor jednoduchú webovú hru '{concept}'. "
+            f"Prioritou je vytvoriť **vizuálne krásne a pútavé používateľské rozhranie (UI)** pomocou moderného CSS. "
+            f"Zahrň relevantnú **grafiku** (zváž SVG, CSS art alebo jednoduché obrázky, ak je to vhodné) a pútavé **CSS animácie**. "
+            f"Vzhľad a dojem sú dôležitejšie ako zložitá herná logika. Hra by mala byť hrateľná, ale jednoduchá."
+        )
+        game_plan.append({"concept": concept, "instruction": instruction})
+
+    log_messages.append("✅ PROFESOR_PLANNER: Herný plán s inštrukciami vytvorený.")
+    return {**state, "game_plan": game_plan, "log_messages": log_messages, "error": None}
+
+def worker_node(state: AgentState) -> AgentState:
+    """Generates the files for the current game based on the plan."""
+    game_plan = state.get("game_plan")
+    current_index = state.get("current_game_index", 0)
+    log_messages = state.get("log_messages", [])
+
+    if not game_plan or current_index >= len(game_plan):
+        error_msg = f"🔴 WORKER: Neplatný herný plán alebo index ({current_index})."
+        log_messages.append(error_msg)
+        return {**state, "log_messages": log_messages, "error": error_msg}
+
+    current_game = game_plan[current_index]
+    concept = current_game["concept"]
+    instruction = current_game["instruction"]
+    theme = state["theme"]
+
+    log_messages.append(f"👷 WORKER: Začínam generovať hru {current_index + 1}/{len(game_plan)}: '{concept}'...")
+    st.session_state.log_messages = log_messages
+
+    prompt = f"""
+    Si expert na vývoj webových hier (HTML, CSS, JavaScript). Tvojou úlohou je vytvoriť súbory pre jednoduchú webovú hru.
+
+    Téma: '{theme}'
+    Koncept hry: '{concept}'
+    Špecifické inštrukcie: '{instruction}'
+
+    Požiadavky na výstup:
+    1. Vygeneruj potrebné súbory (typicky index.html, style.css, script.js).
+    2. Zameraj sa na vizuálnu stránku podľa inštrukcií (krásne UI, grafika, animácie).
+    3. Udržuj kód jednoduchý a funkčný pre daný koncept.
+    4. Všetky súbory musia byť samostatné (žiadne externé závislosti okrem bežných prehliadačových API).
+    5. Odpovedz IBA platným JSON poľom objektov, kde každý objekt reprezentuje jeden súbor.
+       Formát objektu súboru: {{"filename": "nazov_suboru.ext", "content": "obsah súboru ako reťazec..."}}
+    6. Dôsledne dodržuj JSON formátovanie: dvojité úvodzovky pre kľúče a reťazce, správne escapovanie špeciálnych znakov (\\n, \\", atď.) v obsahu súboru.
+
+    Príklad JSON výstupu:
+    [
+      {{"filename": "index.html", "content": "<!DOCTYPE html>..."}},
+      {{"filename": "style.css", "content": "body {{ ... }}"}},
+      {{"filename": "script.js", "content": "console.log('Hello');"}}
+    ]
+    """
+
+    try:
+        response_text = call_llm(prompt, is_json_output=True)
+        files_data = json.loads(response_text)
+        if not isinstance(files_data, list) or not all(isinstance(item, dict) and "filename" in item and "content" in item for item in files_data):
+             raise ValueError("LLM nevrátilo platný zoznam súborov v JSON formáte.")
+
+        log_messages.append(f"✅ WORKER: Súbory pre '{concept}' vygenerované.")
+        return {**state, "worker_output": files_data, "log_messages": log_messages, "error": None}
+    except Exception as e:
+        error_msg = f"🔴 WORKER zlyhal pri generovaní '{concept}': {e}"
+        log_messages.append(error_msg)
+        # Still proceed to next game, but log the error
+        return {**state, "worker_output": None, "log_messages": log_messages, "error": error_msg} # Allow graph to continue
+
+def save_and_log_node(state: AgentState) -> AgentState:
+    """Saves the generated files and updates the list of saved games."""
+    worker_output = state.get("worker_output")
+    game_plan = state.get("game_plan")
+    current_index = state.get("current_game_index", 0)
+    saved_games = state.get("saved_games", [])
+    log_messages = state.get("log_messages", [])
+
+    if worker_output and game_plan and current_index < len(game_plan):
+        concept = game_plan[current_index]["concept"]
+        log_messages.append(f"💾 Ukladám súbory pre hru '{concept}'...")
+        st.session_state.log_messages = log_messages
+
+        game_dir = save_game_files(concept, current_index + 1, worker_output)
+
+        if game_dir:
+            saved_games.append({"name": concept, "folder": game_dir})
+            log_messages.append(f"✅ Hra '{concept}' uložená do '{Path(game_dir).name}'.")
+        else:
+            # Error logged in save_game_files
+            log_messages.append(f"❌ Nepodarilo sa uložiť súbory pre '{concept}'.")
+
+    elif not worker_output and state.get("error"):
+         # Error already logged by worker
+         pass # Just move to the next game
+    else:
+        log_messages.append(f"🤔 Preskakujem ukladanie pre hru index {current_index} (žiadny výstup alebo neplatný stav).")
+
+
+    # Increment index for the next iteration
+    next_index = current_index + 1
+    return {**state, "saved_games": saved_games, "current_game_index": next_index, "log_messages": log_messages, "worker_output": None} # Clear worker output
+
+# --- Conditional Edge ---
+def should_continue(state: AgentState) -> str:
+    """Determines whether to continue the loop or end."""
+    current_index = state.get("current_game_index", 0)
+    game_plan = state.get("game_plan", [])
+    error = state.get("error")
+
+    # Stop if major error occurred before worker loop
+    if not game_plan and error:
+        return "end_process"
+
+    if current_index >= len(game_plan) or current_index >= MAX_GAMES:
+        return "end_process"
+    else:
+        return "continue_worker"
+
+# --- Build the Graph ---
+graph_builder = StateGraph(AgentState)
+
+graph_builder.add_node("games_planner", games_planner_node)
+graph_builder.add_node("profesor_planner", profesor_planner_node)
+graph_builder.add_node("worker", worker_node)
+graph_builder.add_node("save_and_log", save_and_log_node)
+
+graph_builder.set_entry_point("games_planner")
+graph_builder.add_edge("games_planner", "profesor_planner")
+
+# Conditional loop for worker
+graph_builder.add_conditional_edges(
+    "profesor_planner",
+    should_continue,
+    {
+        "continue_worker": "worker", # Start worker loop if plan exists
+        "end_process": END
+    }
+)
+graph_builder.add_conditional_edges(
+    "save_and_log", # After saving/logging, check if loop should continue
+    should_continue,
+    {
+        "continue_worker": "worker", # Go back to worker for next game
+        "end_process": END
+    }
+)
+graph_builder.add_edge("worker", "save_and_log")
+
+# Compile the graph
+# memory = MemorySaver() # Optional: For resuming runs later
+app_graph = graph_builder.compile() # checkpointer=memory
+
+# --- Streamlit UI ---
+st.title("🤖 AI Generátor Hier (Multi-Agent)")
+st.markdown("Zadajte tému a AI agenti vygenerujú sériu jednoduchých webových hier.")
+
+# --- Input Area ---
+theme_input = st.text_input("Zadajte tému pre hry:", placeholder="napr. zvieratá, vesmír, matematika")
+
+if 'log_messages' not in st.session_state:
+    st.session_state.log_messages = ["Vitajte! Zadajte tému a stlačte 'Generovať Hry'."]
+if 'running' not in st.session_state:
+    st.session_state.running = False
+if 'saved_games_list' not in st.session_state:
+     st.session_state.saved_games_list = []
+
+# --- Control Button ---
+if st.button("🚀 Generovať 16 Hier", disabled=st.session_state.running or not theme_input):
+    # Clear previous run logs and saved games list for UI
+    st.session_state.log_messages = [f"🏁 Štartujem generovanie pre tému: '{theme_input}'"]
+    st.session_state.saved_games_list = []
+    st.session_state.running = True
+
+    # Clean workspace before starting? Optional.
+    # try:
+    #     for item in WORKSPACE_DIR.iterdir():
+    #         if item.is_dir():
+    #             shutil.rmtree(item)
+    #         else:
+    #             item.unlink()
+    #     st.session_state.log_messages.append("🧹 Pracovný priestor vyčistený.")
+    # except Exception as e:
+    #     st.session_state.log_messages.append(f"⚠️ Nepodarilo sa vyčistiť pracovný priestor: {e}")
+
+    # Initial state for the graph
+    initial_state = AgentState(
+        theme=theme_input,
+        game_concepts=None,
+        game_plan=None,
+        current_game_index=0,
+        worker_output=None,
+        saved_games=[],
+        log_messages=st.session_state.log_messages,
+        error=None
+    )
+
+    # Use st.status for better progress indication
+    with st.status("⚙️ Spúšťam agentov...", expanded=True) as status:
+        try:
+            # Stream the graph execution
+            # config = {"configurable": {"thread_id": "game-gen-thread"}} # For memory saver
+            final_state = None
+            for output in app_graph.stream(initial_state): # Removed config for simplicity
+                # output is a dictionary where keys are node names
+                # and values are the AgentState after that node ran
+                node_name = list(output.keys())[0]
+                current_state = list(output.values())[0]
+
+                # Update logs in session state for UI refresh
+                st.session_state.log_messages = current_state.get("log_messages", [])
+                st.session_state.saved_games_list = current_state.get("saved_games", [])
+
+                # Update status message (optional)
+                last_log = st.session_state.log_messages[-1] if st.session_state.log_messages else "Pracujem..."
+                status.update(label=f"⚙️ {last_log}", state="running")
+
+                # Store the very last state
+                final_state = current_state
+
+            # Update status upon completion
+            if final_state and final_state.get("error"):
+                 status.update(label=f"⚠️ Proces dokončený s chybami.", state="error")
+            else:
+                 status.update(label="✅ Proces generovania hier dokončený!", state="complete")
+
+        except Exception as e:
+            st.error(f"🔴 Neočakávaná chyba počas behu grafu: {e}")
+            status.update(label=f"💥 Kritická chyba!", state="error")
+            st.session_state.log_messages.append(f"💥 Kritická chyba: {e}")
+        finally:
+            st.session_state.running = False # Allow starting again
+            # Rerun to potentially update the showcase if it's on the same page
+            # Or rely on user navigating to the showcase page
             st.rerun()
 
-# --- Main Area: Tabs ---
-st.title("🤖 AI Tvorca Webstránok (React CDN Náhľad)")
-tab1, tab2 = st.tabs([" 📂 Pracovný priestor ", " 👀 Náhľad "])
 
-with tab1: # --- Workspace Tab (Keep as before) ---
-    st.header("Pracovný priestor & Editor")
-    st.markdown("---")
-    st.subheader("Súbory")
-    available_files = get_workspace_files()
-    if not available_files: st.info(f"Pracovný priestor '{WORKSPACE_DIR.name}' je prázdny.")
-    current_selection_index = 0; options = [None] + available_files
-    if st.session_state.selected_file in options:
-        try: current_selection_index = options.index(st.session_state.selected_file)
-        except ValueError: st.session_state.selected_file = None
-    selected_file_option = st.selectbox("Vyberte súbor:", options=options, format_func=lambda x: "--- Vyberte ---" if x is None else x, key="ws_file_select", index=current_selection_index)
-    st.subheader("Upraviť kód")
-    editor_key = f"editor_{st.session_state.selected_file or 'none'}"
-    if selected_file_option != st.session_state.selected_file:
-        st.session_state.selected_file = selected_file_option
-        st.session_state.file_content = read_file_content(st.session_state.selected_file) or "" if st.session_state.selected_file else ""
-        st.session_state.rendered_html = ""; st.session_state.pop(f"rendered_for_{st.session_state.selected_file}", None)
-        st.rerun()
-    if st.session_state.selected_file:
-        st.caption(f"Upravuje sa: `{st.session_state.selected_file}`")
-        file_ext = Path(st.session_state.selected_file).suffix.lower()
-        lang_map = {".html": "html", ".css": "css", ".js": "javascript", ".py":"python", ".md": "markdown", ".json": "json", ".jsx":"javascript", ".vue":"vue", ".svelte":"svelte", ".txt":"text"}
-        language = lang_map.get(file_ext)
-        edited_content = st.text_area("Editor kódu", value=st.session_state.file_content, height=400, key=editor_key, label_visibility="collapsed", args=(language,))
-        if edited_content != st.session_state.file_content:
-             if st.button("💾 Uložiť manuálne zmeny"):
-                if save_file_content(st.session_state.selected_file, edited_content):
-                    st.session_state.file_content = edited_content; st.success(f"Uložené: `{st.session_state.selected_file}`")
-                    st.session_state.rendered_html = ""; st.session_state.pop(f"rendered_for_{st.session_state.selected_file}", None)
-                    time.sleep(0.5); st.rerun()
-                else: st.error("Nepodarilo sa uložiť.")
-    else:
-        st.info("Vyberte súbor na úpravu.")
-        st.text_area("Editor kódu", value="Vyberte súbor...", height=400, key="editor_placeholder", disabled=True, label_visibility="collapsed")
+# --- Log Display ---
+st.subheader("📜 Priebeh Generovania (Log)")
+log_container = st.container(height=300)
+with log_container:
+    log_text = "\n".join(st.session_state.log_messages)
+    st.text(log_text)
 
-with tab2: # --- Preview Tab (Add New Window Link) ---
-    st.header("👀 Živý náhľad")
-    st.markdown("---")
-    css_applied_info = "" # Initialize to prevent NameError
+# --- Showcase Area (Simple List for now) ---
+st.subheader("🎮 Vygenerované Hry")
+if st.session_state.saved_games_list:
+    for game_info in st.session_state.saved_games_list:
+        game_name = game_info.get("name", "Neznáma hra")
+        game_folder = game_info.get("folder", "")
+        if game_folder:
+            folder_path = Path(game_folder)
+            st.markdown(f"- **{game_name}** (v priečinku: `{folder_path.name}`)")
+            # Add a link - Note: This link only works reliably if running locally
+            # and potentially requires the local server to be running if JS needs it.
+            index_file = folder_path / "index.html"
+            if index_file.exists():
+                 # Simple relative link - might not work well in all scenarios
+                 # A better approach might involve the local server if kept
+                 st.link_button(f"Otvoriť {game_name}", f"./{folder_path.relative_to(Path.cwd())}/index.html", help=f"Pokúsi sa otvoriť {index_file.name}")
 
-    if st.session_state.selected_file:
-        if st.session_state.selected_file.lower().endswith(('.html', '.htm')):
-            current_file_content_for_preview = read_file_content(st.session_state.selected_file)
-            rendered_marker_key = f"rendered_for_{st.session_state.selected_file}"
-            needs_render_update = False
-            if current_file_content_for_preview is not None:
-                 needs_render_update = (not st.session_state.rendered_html or st.session_state.get(rendered_marker_key) != current_file_content_for_preview)
-            else:
-                 st.session_state.rendered_html = ""; st.session_state.pop(rendered_marker_key, None)
-
-            # --- Generate Rendered HTML (if needed) ---
-            if needs_render_update:
-                if current_file_content_for_preview is not None:
-                    final_html = current_file_content_for_preview
-                    is_react_cdn_preview = "<script src=\"https://unpkg.com/@babel/standalone" in final_html
-                    css_applied_info = "" # Reset for this render pass
-                    if not is_react_cdn_preview: # Try CSS injection only if not React CDN preview
-                        css_content = read_file_content(CSS_FILENAME)
-                        if css_content:
-                            style_tag = f"\n<style>\n{css_content}\n</style>\n"
-                            head_match = re.search(r"</head>", final_html, re.IGNORECASE)
-                            if head_match:
-                                injection_point = head_match.start()
-                                final_html = final_html[:injection_point] + style_tag + final_html[injection_point:]
-                                css_applied_info = f"🎨 Vložené `{CSS_FILENAME}`." # Set only if successful
-                    st.session_state.rendered_html = final_html
-                    st.session_state[rendered_marker_key] = current_file_content_for_preview
-                    # Info message moved below display logic
-                else:
-                    st.warning(f"Nepodarilo sa načítať `{st.session_state.selected_file}` pre náhľad.")
-                    st.session_state.rendered_html = "Chyba pri čítaní súboru pre náhľad."
-                    st.session_state.pop(rendered_marker_key, None)
-
-            # --- Display Preview & New Window Link ---
-            if st.session_state.rendered_html and "Chyba pri čítaní súboru" not in st.session_state.rendered_html:
-                st.info(f"Náhľad súboru: `{st.session_state.selected_file}`")
-                st.markdown("---")
-
-                # --- NEW: Button/Link to Open in New Window ---
-                try:
-                    # URL encode the HTML content
-                    encoded_html = urllib.parse.quote(st.session_state.rendered_html)
-                    data_uri = f"data:text/html;charset=utf-8,{encoded_html}"
-                    # Display as a link (browsers usually handle data URIs opening in new tabs)
-                    st.markdown(f'<a href="{data_uri}" target="_blank" rel="noopener noreferrer"><button>🚀 Otvoriť náhľad v novom okne</button></a>', unsafe_allow_html=True)
-                    st.caption("_(Používa Data URI - najlepšie pre samostatné HTML/CSS/JS)_")
-                except Exception as e:
-                    st.warning(f"Nepodarilo sa vytvoriť odkaz 'Otvoriť v novom okne': {e}")
-                # --- End New Window Link ---
+else:
+    st.info("Zatiaľ neboli vygenerované žiadne hry.")
 
 
-                st.components.v1.html(st.session_state.rendered_html, height=600, scrolling=True)
-                st.markdown("---")
-                # --- Caption Logic ---
-                preview_note = "Poznámka: Základný HTML náhľad."
-                if "<script src=\"https://unpkg.com/@babel/standalone" in st.session_state.rendered_html:
-                     preview_note = "Poznámka: Náhľad používa CDN odkazy a transpiláciu v prehliadači pre jednoduché React ukážky."
-                # Re-check css_applied_info based on rendered content for caption consistency
-                # This assumes css_applied_info was correctly set during the relevant render pass
-                # A more robust way might be to store the injection status in session state too.
-                # Simple check: if style tag is present (might be inaccurate if original HTML had one)
-                if not is_react_cdn_preview and f"Vložené `{CSS_FILENAME}`" in css_applied_info: # Check the flag set during render
-                     preview_note += f" {css_applied_info}"
-                st.caption(preview_note)
-
-            elif "Chyba pri čítaní súboru" in str(st.session_state.rendered_html):
-                 st.error("Náhľad zlyhal: Nepodarilo sa načítať HTML súbor.")
-
-        else: # File selected, but not HTML
-            st.info(f"Náhľad je dostupný iba pre HTML súbory. Vybraný: `{st.session_state.selected_file}`")
-            st.session_state.rendered_html = ""
-            st.session_state.pop(f"rendered_for_{st.session_state.selected_file}", None)
-    else: # No file selected
-        st.info("Vyberte HTML súbor z karty 'Pracovný priestor' pre zobrazenie náhľadu.")
-        st.session_state.rendered_html = ""
-
-# --- Footer / Warnings (Sidebar) --- (Keep as before) ---
+# --- Footer / Warnings ---
 st.sidebar.markdown("---")
 st.sidebar.warning("""
     **Obmedzenia prototypu a varovania:**
-    - **Bezpečnosť:** AI môže priamo upravovať súbory! Používajte lokálne a opatrne. **Nezverejňujte verejne.**
-    - **Operácie so súbormi:** Základné vytvorenie/aktualizácia/vymazanie. Možné chyby.
-    - **Náhľad:** Základné vykresľovanie HTML. Pokúša sa vložiť `style.css`. Dokáže vykresliť jednoduché príklady React CDN. **Žiadny build proces, prepojené JS/CSS (pokiaľ nie sú vložené), atď.** "Otvoriť v novom okne" používa Data URI a má obmedzenia (dĺžka URL, žiadne relatívne cesty pre obrázky).
-    - **Spoľahlivosť AI:** AI môže nepochopiť, generovať neplatný JSON/kód alebo zlyhať pri aktualizáciách. Ladenie promptov pomáha. Chyby sú zachytené, ale operácie so súbormi môžu zlyhať.
+    - **Generovanie:** Môže trvať dlho a spotrebovať veľa API volaní.
+    - **Kvalita Hier:** Vizuálna stránka a funkčnosť závisí od schopností LLM.
+    - **Bezpečnosť:** AI generuje kód. Spúšťajte lokálne a opatrne.
     - **Stav:** Stratí sa pri obnovení prehliadača.
 """, icon="⚠️")
