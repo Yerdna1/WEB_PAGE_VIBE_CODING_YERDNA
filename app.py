@@ -9,6 +9,8 @@ import time
 from dotenv import load_dotenv # Re-added dotenv import
 import re # For regex used in CSS injection
 import urllib.parse # <<< ADDED IMPORT for URL encoding
+import subprocess # <<< ADDED IMPORT for server process
+import sys # <<< ADDED IMPORT for platform check
 
 # --- Configuration ---
 st.set_page_config(layout="wide", page_title="AI Tvorca Webstránok (React CDN)")
@@ -43,8 +45,10 @@ if "selected_file" not in st.session_state: st.session_state.selected_file = Non
 if "file_content" not in st.session_state: st.session_state.file_content = ""
 if "rendered_html" not in st.session_state: st.session_state.rendered_html = ""
 # rendered_for_{filename} marker is added/removed dynamically
+if "server_running" not in st.session_state: st.session_state.server_running = False
+if "server_process" not in st.session_state: st.session_state.server_process = None
 
-# --- Helper Functions --- (Keep as before) ---
+# --- Helper Functions ---
 def get_workspace_files():
     try: return sorted([f.name for f in WORKSPACE_DIR.iterdir() if f.is_file()])
     except Exception as e: st.error(f"Chyba pri vypisovaní súborov v pracovnom priestore: {e}"); return []
@@ -81,6 +85,61 @@ def delete_file(filename):
         return True
     except FileNotFoundError: st.warning(f"Súbor '{filename}' nenájdený na vymazanie."); return False
     except Exception as e: st.error(f"Chyba pri mazaní súboru '{filename}': {e}"); return False
+
+# --- Server Functions ---
+def start_server():
+    if not st.session_state.server_running:
+        try:
+            # Command to start Python's HTTP server
+            # Use sys.executable to ensure the correct python interpreter is used
+            command = [
+                sys.executable, # Path to current python interpreter
+                "-m", "http.server",
+                "8000", # Port number
+                "--directory", str(WORKSPACE_DIR.resolve()) # Serve from workspace directory
+            ]
+            # Start the server process without blocking, hide console window on Windows
+            creationflags = 0
+            if sys.platform == "win32":
+                creationflags = subprocess.CREATE_NO_WINDOW
+            process = subprocess.Popen(command, creationflags=creationflags)
+
+            st.session_state.server_process = process
+            st.session_state.server_running = True
+            st.success("🚀 Lokálny server spustený na porte 8000.")
+            time.sleep(1) # Give server a moment to start
+            st.rerun() # Rerun to update button state
+        except Exception as e:
+            st.error(f"🔴 Nepodarilo sa spustiť server: {e}")
+            st.session_state.server_running = False
+            st.session_state.server_process = None
+    else:
+        st.warning("Server už beží.")
+
+def stop_server():
+    if st.session_state.server_running and st.session_state.server_process:
+        try:
+            st.session_state.server_process.terminate() # Terminate the process
+            st.session_state.server_process.wait(timeout=2) # Wait briefly for termination
+            st.session_state.server_running = False
+            st.session_state.server_process = None
+            st.success("🛑 Lokálny server zastavený.")
+            st.rerun() # Rerun to update button state
+        except subprocess.TimeoutExpired:
+             st.warning("Server sa nepodarilo zastaviť včas, možno bude potrebné manuálne ukončenie.")
+             # Still update state assuming it might have stopped or will soon
+             st.session_state.server_running = False
+             st.session_state.server_process = None
+             st.rerun()
+        except Exception as e:
+            st.error(f"🔴 Chyba pri zastavovaní servera: {e}")
+            # Attempt to reset state anyway
+            st.session_state.server_running = False
+            st.session_state.server_process = None
+            st.rerun()
+    else:
+        st.warning("Server nebeží.")
+
 
 # --- AI Interaction & File Ops --- (Keep parse_and_execute_commands as before) ---
 def parse_and_execute_commands(ai_response_text):
@@ -242,9 +301,40 @@ with tab1: # --- Workspace Tab (Keep as before) ---
         st.info("Vyberte súbor na úpravu.")
         st.text_area("Editor kódu", value="Vyberte súbor...", height=400, key="editor_placeholder", disabled=True, label_visibility="collapsed")
 
-with tab2: # --- Preview Tab (Add New Window Link) ---
+with tab2: # --- Preview Tab (Add New Window Link & Live Server) ---
     st.header("👀 Živý náhľad")
     st.markdown("---")
+
+    # --- Live Server Section ---
+    st.subheader("🌐 Lokálny Live Server")
+    st.caption(f"Server bude hosťovať súbory z adresára: `{WORKSPACE_DIR.name}`")
+
+    server_status = "Beží" if st.session_state.server_running else "Zastavený"
+    status_color = "green" if st.session_state.server_running else "red"
+    st.markdown(f"**Stav:** <span style='color:{status_color};'>{server_status}</span>", unsafe_allow_html=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if not st.session_state.server_running:
+            st.button("▶️ Štart Live Server", on_click=start_server, use_container_width=True)
+        else:
+            st.button("⏹️ Stop Live Server", on_click=stop_server, use_container_width=True)
+
+    if st.session_state.server_running:
+        with col2:
+             # Provide link to the server root
+             server_url = "http://localhost:8000/"
+             st.link_button("🔗 Otvoriť Live Server v Prehliadači", server_url, use_container_width=True)
+        st.info("Otvorte odkaz vyššie v novom okne prehliadača. Manuálne obnovte (refresh) okno prehliadača po vykonaní zmien AI, aby ste videli aktualizácie.")
+    else:
+         with col2:
+             st.button("🔗 Otvoriť Live Server v Prehliadači", "#", disabled=True, use_container_width=True) # Disabled link
+
+    st.markdown("---") # Separator
+
+    # --- Existing Embedded Preview Section ---
+    st.subheader("⚡ Rýchly Vložený Náhľad")
+    st.caption("(Obmedzená funkčnosť JavaScriptu, žiadne automatické obnovenie)")
     css_applied_info = "" # Initialize to prevent NameError
 
     if st.session_state.selected_file:
@@ -313,23 +403,26 @@ with tab2: # --- Preview Tab (Add New Window Link) ---
                 st.caption(preview_note)
 
             elif "Chyba pri čítaní súboru" in str(st.session_state.rendered_html):
-                 st.error("Náhľad zlyhal: Nepodarilo sa načítať HTML súbor.")
+                 st.error("Vložený náhľad zlyhal: Nepodarilo sa načítať HTML súbor.")
 
         else: # File selected, but not HTML
-            st.info(f"Náhľad je dostupný iba pre HTML súbory. Vybraný: `{st.session_state.selected_file}`")
+            st.info(f"Vložený náhľad je dostupný iba pre HTML súbory. Vybraný: `{st.session_state.selected_file}`")
             st.session_state.rendered_html = ""
             st.session_state.pop(f"rendered_for_{st.session_state.selected_file}", None)
     else: # No file selected
-        st.info("Vyberte HTML súbor z karty 'Pracovný priestor' pre zobrazenie náhľadu.")
+        st.info("Vyberte HTML súbor z karty 'Pracovný priestor' pre zobrazenie vloženého náhľadu.")
         st.session_state.rendered_html = ""
 
-# --- Footer / Warnings (Sidebar) --- (Keep as before) ---
+# --- Footer / Warnings (Sidebar) --- (Update warnings) ---
 st.sidebar.markdown("---")
 st.sidebar.warning("""
     **Obmedzenia prototypu a varovania:**
     - **Bezpečnosť:** AI môže priamo upravovať súbory! Používajte lokálne a opatrne. **Nezverejňujte verejne.**
     - **Operácie so súbormi:** Základné vytvorenie/aktualizácia/vymazanie. Možné chyby.
-    - **Náhľad:** Základné vykresľovanie HTML. Pokúša sa vložiť `style.css`. Dokáže vykresliť jednoduché príklady React CDN. **Žiadny build proces, prepojené JS/CSS (pokiaľ nie sú vložené), atď.** "Otvoriť v novom okne" používa Data URI a má obmedzenia (dĺžka URL, žiadne relatívne cesty pre obrázky).
+    - **Náhľad:**
+        - **Vložený:** Obmedzený (iframe), nemusí správne spúšťať JS. Pokúša sa vložiť `style.css`.
+        - **Live Server:** Poskytuje presný náhľad v novom okne prehliadača (`http://localhost:8000/`). **Vyžaduje manuálne obnovenie (refresh)** okna po zmenách. Server beží na pozadí.
+        - **"Otvoriť v novom okne" (Data URI):** Najlepšie pre jednoduché, samostatné HTML. Má obmedzenia.
     - **Spoľahlivosť AI:** AI môže nepochopiť, generovať neplatný JSON/kód alebo zlyhať pri aktualizáciách. Ladenie promptov pomáha. Chyby sú zachytené, ale operácie so súbormi môžu zlyhať.
-    - **Stav:** Stratí sa pri obnovení prehliadača.
+    - **Stav:** Stratí sa pri obnovení prehliadača. Server sa musí reštartovať manuálne.
 """, icon="⚠️")

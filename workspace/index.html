@@ -1,17 +1,21 @@
 <!DOCTYPE html>
-<html lang="sk">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tetris Základ</title>
+    <title>Tetris</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <h1>Tetris Základ</h1>
-    <div>
-        <p>Skóre: <span id="score">0</span></p>
+    <div id="game-container">
+        <h1>Tetris</h1>
+        <div id="score-container">
+            Score: <span id="score">0</span>
+        </div>
+        <canvas id="tetris-board" width="240" height="480"></canvas>
+        <button id="start-button">Start Game</button>
+        <p id="game-over" class="hidden">Game Over!</p>
     </div>
-    <canvas id="gameCanvas"></canvas>
 
     <script src="script.js"></script>
 </body>
