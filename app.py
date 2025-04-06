@@ -6,13 +6,13 @@ import os
 from pathlib import Path
 import json
 import time
-# Removed: from dotenv import load_dotenv
+from dotenv import load_dotenv # Re-added dotenv import
 import re # For regex used in CSS injection
 import urllib.parse # <<< ADDED IMPORT for URL encoding
 
 # --- Configuration ---
 st.set_page_config(layout="wide", page_title="AI Tvorca Webstránok (React CDN)")
-# Removed: load_dotenv()
+load_dotenv() # Re-added load_dotenv() call
 
 # --- Constants ---
 WORKSPACE_DIR = Path("workspace") # Directory for generated web files
@@ -21,21 +21,20 @@ CSS_FILENAME = "style.css" # Conventional CSS filename for injection
 
 # --- Gemini API Configuration ---
 try:
-    # Use st.secrets for API key
-    if "GOOGLE_API_KEY" not in st.secrets:
-        st.error("🔴 Google API kľúč nenájdený v Streamlit secrets (/.streamlit/secrets.toml).")
+    # Use os.getenv for API key from .env file
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        st.error("🔴 Google API kľúč nenájdený. Prosím, uistite sa, že GOOGLE_API_KEY je nastavený vo vašom .env súbore.")
         st.stop()
-    api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
 
-    # Use st.secrets for model name if available, otherwise default
-    # Note: Secrets are typically strings. If you store other types, adjust access.
-    model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25") # Default fallback
+    # Use os.getenv for model name from .env file, otherwise default
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25") # Default fallback
 
     st.sidebar.caption(f"Používaný model: `{model_name}`")
     model = genai.GenerativeModel(model_name)
 except Exception as e:
-    st.error(f"🔴 Nepodarilo sa nakonfigurovať Gemini alebo načítať model '{model_name}' pomocou Streamlit secrets: {e}")
+    st.error(f"🔴 Nepodarilo sa nakonfigurovať Gemini alebo načítať model '{model_name}' pomocou .env: {e}")
     st.stop()
 
 # --- Session State Initialization ---
