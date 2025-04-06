@@ -1,17 +1,18 @@
 # app.py - React Website Builder (CDN Preview) with Sidebar Chat, Tabs, and New Window Link
 import streamlit as st
+import streamlit as st # Ensure streamlit is imported before use
 import google.generativeai as genai
 import os
 from pathlib import Path
 import json
 import time
-from dotenv import load_dotenv
+# Removed: from dotenv import load_dotenv
 import re # For regex used in CSS injection
 import urllib.parse # <<< ADDED IMPORT for URL encoding
 
 # --- Configuration ---
 st.set_page_config(layout="wide", page_title="AI Web Builder (React CDN)")
-load_dotenv() # Load environment variables from .env file FIRST
+# Removed: load_dotenv()
 
 # --- Constants ---
 WORKSPACE_DIR = Path("workspace") # Directory for generated web files
@@ -20,19 +21,21 @@ CSS_FILENAME = "style.css" # Conventional CSS filename for injection
 
 # --- Gemini API Configuration ---
 try:
-    api_key = os.getenv("GOOGLE_API_KEY")
-    if not api_key:
-        st.error("🔴 Google API Key not found. Please ensure GOOGLE_API_KEY is set in your .env file.")
+    # Use st.secrets for API key
+    if "GOOGLE_API_KEY" not in st.secrets:
+        st.error("🔴 Google API Key not found in Streamlit secrets (/.streamlit/secrets.toml).")
         st.stop()
+    api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
-    # Use requested experimental model (with fallback)
-    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25") # Default fallback
-    # If user specifically requested the experimental one:
-    # model_name = "gemini-2.5-pro-exp-03-25"
+
+    # Use st.secrets for model name if available, otherwise default
+    # Note: Secrets are typically strings. If you store other types, adjust access.
+    model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25") # Default fallback
+
     st.sidebar.caption(f"Using Model: `{model_name}`")
     model = genai.GenerativeModel(model_name)
 except Exception as e:
-    st.error(f"🔴 Failed to configure Gemini or load model '{model_name}': {e}")
+    st.error(f"🔴 Failed to configure Gemini or load model '{model_name}' using Streamlit secrets: {e}")
     st.stop()
 
 # --- Session State Initialization ---
