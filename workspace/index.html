@@ -1,21 +1,18 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="sk">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tetris</title>
+    <title>Agent hľadá cestu</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <div id="game-container">
-        <h1>Tetris</h1>
-        <div id="score-container">
-            Score: <span id="score">0</span>
-        </div>
-        <canvas id="tetris-board" width="240" height="480"></canvas>
-        <button id="start-button">Start Game</button>
-        <p id="game-over" class="hidden">Game Over!</p>
+    <h1>Simulácia hľadania cesty</h1>
+    <div id="environment">
+        <div id="agent"></div>
+        <div id="goal"></div>
     </div>
+    <p>Agent (modrý štvorec) sa snaží dosiahnuť cieľ (zelený kruh).</p>
 
     <script src="script.js"></script>
 </body>

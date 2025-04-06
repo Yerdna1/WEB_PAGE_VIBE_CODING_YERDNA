@@ -1,271 +1,69 @@
-const canvas = document.getElementById('tetris-board');
-const context = canvas.getContext('2d');
-const scoreElement = document.getElementById('score');
-const startButton = document.getElementById('start-button');
-const gameOverElement = document.getElementById('game-over');
+const agent = document.getElementById('agent');
+const goal = document.getElementById('goal');
+const environment = document.getElementById('environment');
 
-const COLS = 10;
-const ROWS = 20;
-const BLOCK_SIZE = 24; // canvas.width / COLS, canvas.height / ROWS
+// Získanie rozmerov prostredia a cieľa
+const envRect = environment.getBoundingClientRect();
+const goalRect = goal.getBoundingClientRect();
 
-// Adjust canvas size based on constants
-canvas.width = COLS * BLOCK_SIZE;
-canvas.height = ROWS * BLOCK_SIZE;
+// Pozícia agenta (aktuálna)
+let agentX = agent.offsetLeft;
+let agentY = agent.offsetTop;
 
-context.scale(BLOCK_SIZE, BLOCK_SIZE);
+// Pozícia cieľa (relatívne k prostrediu)
+// Odpočítame pozíciu prostredia, aby sme získali relatívne súradnice
+// A upravíme o polovicu rozmeru cieľa, aby sme mierili na stred
+const goalX = goal.offsetLeft + goal.offsetWidth / 2 - agent.offsetWidth / 2;
+const goalY = goal.offsetTop + goal.offsetHeight / 2 - agent.offsetHeight / 2;
 
-let board = createBoard(ROWS, COLS);
-let score = 0;
-let gameOver = false;
-let gameInterval = null;
-let dropStart = Date.now();
+// Rýchlosť agenta (pixelov za krok)
+const speed = 2;
+let animationFrameId = null;
 
-const COLORS = [
-    null,        // 0 - Empty
-    '#FF0D72',   // 1 - I
-    '#0DC2FF',   // 2 - J
-    '#0DFF72',   // 3 - L
-    '#F538FF',   // 4 - O
-    '#FF8E0D',   // 5 - S
-    '#FFE138',   // 6 - T
-    '#3877FF'    // 7 - Z
-];
+function moveAgent() {
+    // Vypočítať vektor smerom k cieľu
+    const dx = goalX - agentX;
+    const dy = goalY - agentY;
 
-const TETROMINOES = {
-    'I': [
-        [0, 0, 0, 0],
-        [1, 1, 1, 1],
-        [0, 0, 0, 0],
-        [0, 0, 0, 0]
-    ],
-    'J': [
-        [2, 0, 0],
-        [2, 2, 2],
-        [0, 0, 0],
-    ],
-    'L': [
-        [0, 0, 3],
-        [3, 3, 3],
-        [0, 0, 0],
-    ],
-    'O': [
-        [4, 4],
-        [4, 4],
-    ],
-    'S': [
-        [0, 5, 5],
-        [5, 5, 0],
-        [0, 0, 0],
-    ],
-    'T': [
-        [0, 6, 0],
-        [6, 6, 6],
-        [0, 0, 0],
-    ],
-    'Z': [
-        [7, 7, 0],
-        [0, 7, 7],
-        [0, 0, 0],
-    ]
-};
+    // Vypočítať vzdialenosť k cieľu
+    const distance = Math.sqrt(dx * dx + dy * dy);
 
-let player = {
-    pos: { x: 0, y: 0 },
-    matrix: null,
-    score: 0
-};
-
-function createBoard(rows, cols) {
-    const matrix = [];
-    while (rows--) {
-        matrix.push(new Array(cols).fill(0));
-    }
-    return matrix;
-}
-
-function drawMatrix(matrix, offset) {
-    matrix.forEach((row, y) => {
-        row.forEach((value, x) => {
-            if (value !== 0) {
-                context.fillStyle = COLORS[value];
-                context.fillRect(x + offset.x,
-                                 y + offset.y,
-                                 1, 1);
-                 // Add a subtle border to blocks
-                 context.strokeStyle = '#333';
-                 context.lineWidth = 0.05;
-                 context.strokeRect(x + offset.x, y + offset.y, 1, 1);
-            }
-        });
-    });
-}
-
-function draw() {
-    // Clear canvas (draw background)
-    context.fillStyle = '#000'; // Or use background color matching CSS
-    context.fillRect(0, 0, canvas.width / BLOCK_SIZE, canvas.height / BLOCK_SIZE);
-
-    drawMatrix(board, { x: 0, y: 0 }); // Draw settled pieces
-    drawMatrix(player.matrix, player.pos); // Draw current player piece
-}
-
-function merge(board, player) {
-    player.matrix.forEach((row, y) => {
-        row.forEach((value, x) => {
-            if (value !== 0) {
-                board[y + player.pos.y][x + player.pos.x] = value;
-            }
-        });
-    });
-}
-
-function rotate(matrix, dir) {
-    for (let y = 0; y < matrix.length; ++y) {
-        for (let x = 0; x < y; ++x) {
-            [matrix[x][y], matrix[y][x]] = [matrix[y][x], matrix[x][y]];
-        }
-    }
-    if (dir > 0) {
-        matrix.forEach(row => row.reverse());
-    } else {
-        matrix.reverse();
-    }
-}
-
-function playerDrop() {
-    player.pos.y++;
-    if (collide(board, player)) {
-        player.pos.y--;
-        merge(board, player);
-        playerReset();
-        boardSweep();
-        updateScoreDisplay();
-    }
-    dropStart = Date.now();
-}
-
-function playerMove(offset) {
-    player.pos.x += offset;
-    if (collide(board, player)) {
-        player.pos.x -= offset;
-    }
-}
-
-function playerRotate(dir) {
-    const pos = player.pos.x;
-    let offset = 1;
-    rotate(player.matrix, dir);
-    while (collide(board, player)) {
-        player.pos.x += offset;
-        offset = -(offset + (offset > 0 ? 1 : -1));
-        if (offset > player.matrix[0].length) {
-            rotate(player.matrix, -dir); // Rotate back
-            player.pos.x = pos; // Reset position
-            return;
-        }
-    }
-}
-
-function collide(board, player) {
-    const [m, o] = [player.matrix, player.pos];
-    for (let y = 0; y < m.length; ++y) {
-        for (let x = 0; x < m[y].length; ++x) {
-            if (m[y][x] !== 0 &&
-               (board[y + o.y] &&
-                board[y + o.y][x + o.x]) !== 0) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-function playerReset() {
-    const tetrominoes = 'IJLOSTZ';
-    const randTetromino = tetrominoes[Math.floor(Math.random() * tetrominoes.length)];
-    player.matrix = TETROMINOES[randTetromino];
-    player.pos.y = 0;
-    player.pos.x = Math.floor(COLS / 2) - Math.floor(player.matrix[0].length / 2);
-
-    if (collide(board, player)) {
-        // Game Over
-        gameOver = true;
-        gameOverElement.classList.remove('hidden');
-        if (gameInterval) clearInterval(gameInterval);
-        startButton.disabled = false; // Allow restarting
-        startButton.textContent = 'Restart Game';
-    }
-}
-
-function boardSweep() {
-    let rowCount = 1;
-    outer: for (let y = board.length - 1; y > 0; --y) {
-        for (let x = 0; x < board[y].length; ++x) {
-            if (board[y][x] === 0) {
-                continue outer; // Found an empty cell, row is not full
-            }
-        }
-        // If we get here, the row is full
-        const row = board.splice(y, 1)[0].fill(0);
-        board.unshift(row);
-        ++y; // Check the new row at this index again
-
-        score += rowCount * 10;
-        rowCount *= 2; // Points increase for multiple lines at once
-    }
-}
-
-function updateScoreDisplay() {
-    scoreElement.innerText = score;
-}
-
-function update(time = 0) {
-    if (gameOver) return;
-
-    const now = Date.now();
-    const deltaTime = now - dropStart;
-
-    if (deltaTime > 1000) { // Drop every second (adjust for difficulty)
-        playerDrop();
+    // Ak sme dostatočne blízko, zastaviť animáciu
+    if (distance < speed) {
+        agentX = goalX;
+        agentY = goalY;
+        agent.style.transform = `translate(${agentX - agent.offsetLeft}px, ${agentY - agent.offsetTop}px)`;
+        console.log("Cieľ dosiahnutý!");
+        cancelAnimationFrame(animationFrameId);
+        // Prípadne zmeniť farbu agenta alebo cieľa
+        agent.style.backgroundColor = '#f1c40f'; // Žltá po dosiahnutí
+        return; // Ukončiť funkciu
     }
 
-    draw();
+    // Normalizovať smerový vektor (aby mal dĺžku 1)
+    const normDx = dx / distance;
+    const normDy = dy / distance;
+
+    // Posunúť agenta o krok v správnom smere
+    agentX += normDx * speed;
+    agentY += normDy * speed;
+
+    // Jednoduchá kontrola hraníc prostredia
+    agentX = Math.max(0, Math.min(envRect.width - agent.offsetWidth, agentX));
+    agentY = Math.max(0, Math.min(envRect.height - agent.offsetHeight, agentY));
+
+    // Aplikovať novú pozíciu cez transformáciu pre plynulejší pohyb
+    // Potrebujeme posunúť relatívne k pôvodnej pozícii definovanej v CSS
+    const translateX = agentX - agent.offsetLeft;
+    const translateY = agentY - agent.offsetTop;
+    agent.style.transform = `translate(${translateX}px, ${translateY}px)`;
+
+    // Požiadať o ďalší krok animácie
+    animationFrameId = requestAnimationFrame(moveAgent);
 }
 
-function startGame() {
-    board = createBoard(ROWS, COLS);
-    score = 0;
-    updateScoreDisplay();
-    gameOver = false;
-    gameOverElement.classList.add('hidden');
-    playerReset(); // Get the first piece
+// Spustiť animáciu
+animationFrameId = requestAnimationFrame(moveAgent);
 
-    if (gameInterval) clearInterval(gameInterval);
-    gameInterval = setInterval(update, 50); // ~20 FPS game loop for drawing/checking
-    dropStart = Date.now();
-    startButton.disabled = true;
-    startButton.textContent = 'Start Game'; // Reset button text
-    canvas.focus(); // Focus canvas for key events if needed, though document listener is used
-}
-
-document.addEventListener('keydown', event => {
-    if (gameOver) return;
-
-    if (event.key === 'ArrowLeft') {
-        playerMove(-1);
-    } else if (event.key === 'ArrowRight') {
-        playerMove(1);
-    } else if (event.key === 'ArrowDown') {
-        playerDrop();
-    } else if (event.key === 'ArrowUp' || event.key === 'q') { // Rotate counter-clockwise
-        playerRotate(-1);
-    } else if (event.key === 'w' || event.key === 'e') { // Rotate clockwise (common alternative)
-        playerRotate(1);
-    }
-});
-
-startButton.addEventListener('click', startGame);
-
-// Initial setup message or draw empty board
-draw();
-console.log("Tetris initialized. Press Start Game.");
+console.log("Simulácia spustená. Agent hľadá cieľ.");
+console.log(`Cieľ na pozícii (relatívne): X=${goalX.toFixed(2)}, Y=${goalY.toFixed(2)}`);
