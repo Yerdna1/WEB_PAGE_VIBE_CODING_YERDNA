@@ -11,7 +11,7 @@ import re # For regex used in CSS injection
 import urllib.parse # <<< ADDED IMPORT for URL encoding
 
 # --- Configuration ---
-st.set_page_config(layout="wide", page_title="AI Web Builder (React CDN)")
+st.set_page_config(layout="wide", page_title="AI Tvorca Webstránok (React CDN)")
 # Removed: load_dotenv()
 
 # --- Constants ---
@@ -23,7 +23,7 @@ CSS_FILENAME = "style.css" # Conventional CSS filename for injection
 try:
     # Use st.secrets for API key
     if "GOOGLE_API_KEY" not in st.secrets:
-        st.error("🔴 Google API Key not found in Streamlit secrets (/.streamlit/secrets.toml).")
+        st.error("🔴 Google API kľúč nenájdený v Streamlit secrets (/.streamlit/secrets.toml).")
         st.stop()
     api_key = st.secrets["GOOGLE_API_KEY"]
     genai.configure(api_key=api_key)
@@ -32,10 +32,10 @@ try:
     # Note: Secrets are typically strings. If you store other types, adjust access.
     model_name = st.secrets.get("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25") # Default fallback
 
-    st.sidebar.caption(f"Using Model: `{model_name}`")
+    st.sidebar.caption(f"Používaný model: `{model_name}`")
     model = genai.GenerativeModel(model_name)
 except Exception as e:
-    st.error(f"🔴 Failed to configure Gemini or load model '{model_name}' using Streamlit secrets: {e}")
+    st.error(f"🔴 Nepodarilo sa nakonfigurovať Gemini alebo načítať model '{model_name}' pomocou Streamlit secrets: {e}")
     st.stop()
 
 # --- Session State Initialization ---
@@ -48,7 +48,7 @@ if "rendered_html" not in st.session_state: st.session_state.rendered_html = ""
 # --- Helper Functions --- (Keep as before) ---
 def get_workspace_files():
     try: return sorted([f.name for f in WORKSPACE_DIR.iterdir() if f.is_file()])
-    except Exception as e: st.error(f"Error listing workspace files: {e}"); return []
+    except Exception as e: st.error(f"Chyba pri vypisovaní súborov v pracovnom priestore: {e}"); return []
 
 def read_file_content(filename):
     if not filename: return None
@@ -57,7 +57,7 @@ def read_file_content(filename):
     try:
         with open(filepath, "r", encoding="utf-8") as f: return f.read()
     except FileNotFoundError: return None
-    except Exception as e: st.error(f"Error reading file '{filename}': {e}"); return None
+    except Exception as e: st.error(f"Chyba pri čítaní súboru '{filename}': {e}"); return None
 
 def save_file_content(filename, content):
     if not filename: return False
@@ -66,7 +66,7 @@ def save_file_content(filename, content):
     try:
         filepath.parent.mkdir(parents=True, exist_ok=True)
         with open(filepath, "w", encoding="utf-8") as f: f.write(content); return True
-    except Exception as e: st.error(f"Error saving file '{filename}': {e}"); return False
+    except Exception as e: st.error(f"Chyba pri ukladaní súboru '{filename}': {e}"); return False
 
 def delete_file(filename):
     if not filename: return False
@@ -80,8 +80,8 @@ def delete_file(filename):
             st.session_state.rendered_html = ""
             st.session_state.pop(f"rendered_for_{filename}", None)
         return True
-    except FileNotFoundError: st.warning(f"File '{filename}' not found for deletion."); return False
-    except Exception as e: st.error(f"Error deleting file '{filename}': {e}"); return False
+    except FileNotFoundError: st.warning(f"Súbor '{filename}' nenájdený na vymazanie."); return False
+    except Exception as e: st.error(f"Chyba pri mazaní súboru '{filename}': {e}"); return False
 
 # --- AI Interaction & File Ops --- (Keep parse_and_execute_commands as before) ---
 def parse_and_execute_commands(ai_response_text):
@@ -98,19 +98,19 @@ def parse_and_execute_commands(ai_response_text):
             parsed_commands.append(command)
             if action=="create_update":
                 if filename and content is not None:
-                    if not save_file_content(filename, content): st.warning(f"Failed save '{filename}'.")
-                else: st.warning(f"⚠️ Invalid 'create_update': {command}")
+                    if not save_file_content(filename, content): st.warning(f"Nepodarilo sa uložiť '{filename}'.")
+                else: st.warning(f"⚠️ Neplatný 'create_update': {command}")
             elif action=="delete":
                 if filename: delete_file(filename)
-                else: st.warning(f"⚠️ Invalid 'delete': {command}")
+                else: st.warning(f"⚠️ Neplatný 'delete': {command}")
             elif action=="chat": pass
-            else: st.warning(f"⚠️ Unknown action '{action}': {command}")
+            else: st.warning(f"⚠️ Neznáma akcia '{action}': {command}")
         return parsed_commands
     except json.JSONDecodeError as e:
-        st.error(f"🔴 Invalid JSON: {e}\nTxt:\n'{ai_response_text[:500]}...'")
+        st.error(f"🔴 Neplatný JSON: {e}\nText:\n'{ai_response_text[:500]}...'")
         return [{"action": "chat", "content": f"AI(Invalid JSON): {ai_response_text}"}]
     except Exception as e:
-        st.error(f"🔴 Error processing commands: {e}")
+        st.error(f"🔴 Chyba pri spracovaní príkazov: {e}")
         return [{"action": "chat", "content": f"Error processing commands: {e}"}]
 
 # --- Keep call_gemini as before (with strict prompt for web/React CDN) ---
@@ -166,17 +166,17 @@ def call_gemini(history):
     try:
         response = model.generate_content(gemini_history); return response.text
     except Exception as e:
-        if "429" in str(e): st.error("🔴 Gemini API Quota/Rate Limit Exceeded.")
-        else: st.error(f"🔴 Gemini API call failed: {e}")
+        if "429" in str(e): st.error("🔴 Prekročená kvóta/limit požiadaviek Gemini API.")
+        else: st.error(f"🔴 Volanie Gemini API zlyhalo: {e}")
         error_content = f"Error calling AI: {str(e)}".replace('"',"'"); return json.dumps([{"action": "chat", "content": error_content}])
 
 # --- Streamlit UI Layout ---
 
 # --- Sidebar: Chat Interface --- (Keep as before) ---
 with st.sidebar:
-    st.header("💬 Chat with AI")
-    st.markdown("Ask the AI to create or modify web files (HTML, CSS, JS, React CDN Previews).")
-    st.caption(f"Using Model: `{model_name}`") # Display model name
+    st.header("💬 Chat s AI")
+    st.markdown("Požiadajte AI o vytvorenie alebo úpravu webových súborov (HTML, CSS, JS, React CDN náhľady).")
+    st.caption(f"Používaný model: `{model_name}`") # Display model name
     chat_container = st.container(height=500)
     with chat_container:
         if st.session_state.messages:
@@ -187,39 +187,39 @@ with st.sidebar:
                         for command in message["content"]:
                             if not isinstance(command, dict): continue
                             action = command.get("action"); filename = command.get("filename")
-                            if action == "create_update": display_text += f"📝 Create/Update: `{filename}`\n"
-                            elif action == "delete": display_text += f"🗑️ Delete: `{filename}`\n"
+                            if action == "create_update": display_text += f"📝 Vytvoriť/Aktualizovať: `{filename}`\n"
+                            elif action == "delete": display_text += f"🗑️ Vymazať: `{filename}`\n"
                             elif action == "chat": chat_messages.append(command.get('content', '...'))
-                            else: display_text += f"⚠️ {command.get('content', f'Unknown action: {action}')}\n"
+                            else: display_text += f"⚠️ {command.get('content', f'Neznáma akcia: {action}')}\n"
                         final_display = (display_text + "\n".join(chat_messages)).strip()
-                        if not final_display: final_display = "(No action)"
+                        if not final_display: final_display = "(Žiadna akcia)"
                         st.markdown(final_display)
                     else: st.write(str(message.get("content", "")))
-        else: st.info("Chat history empty.")
-    if prompt := st.chat_input("e.g., Create index.html with a title"):
+        else: st.info("História chatu je prázdna.")
+    if prompt := st.chat_input("napr., Vytvor index.html s nadpisom"):
         st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.spinner("🧠 AI Thinking..."):
+        with st.spinner("🧠 AI premýšľa..."):
             ai_response_text = call_gemini(st.session_state.messages)
             executed_commands = parse_and_execute_commands(ai_response_text)
             st.session_state.messages.append({"role": "assistant", "content": executed_commands})
             st.rerun()
 
 # --- Main Area: Tabs ---
-st.title("🤖 AI Web Builder (React CDN Preview)")
-tab1, tab2 = st.tabs([" 📂 Workspace ", " 👀 Preview "])
+st.title("🤖 AI Tvorca Webstránok (React CDN Náhľad)")
+tab1, tab2 = st.tabs([" 📂 Pracovný priestor ", " 👀 Náhľad "])
 
 with tab1: # --- Workspace Tab (Keep as before) ---
-    st.header("Workspace & Editor")
+    st.header("Pracovný priestor & Editor")
     st.markdown("---")
-    st.subheader("Files")
+    st.subheader("Súbory")
     available_files = get_workspace_files()
-    if not available_files: st.info(f"Workspace '{WORKSPACE_DIR.name}' empty.")
+    if not available_files: st.info(f"Pracovný priestor '{WORKSPACE_DIR.name}' je prázdny.")
     current_selection_index = 0; options = [None] + available_files
     if st.session_state.selected_file in options:
         try: current_selection_index = options.index(st.session_state.selected_file)
         except ValueError: st.session_state.selected_file = None
-    selected_file_option = st.selectbox("Select file:", options=options, format_func=lambda x: "--- Select ---" if x is None else x, key="ws_file_select", index=current_selection_index)
-    st.subheader("Edit Code")
+    selected_file_option = st.selectbox("Vyberte súbor:", options=options, format_func=lambda x: "--- Vyberte ---" if x is None else x, key="ws_file_select", index=current_selection_index)
+    st.subheader("Upraviť kód")
     editor_key = f"editor_{st.session_state.selected_file or 'none'}"
     if selected_file_option != st.session_state.selected_file:
         st.session_state.selected_file = selected_file_option
@@ -227,24 +227,24 @@ with tab1: # --- Workspace Tab (Keep as before) ---
         st.session_state.rendered_html = ""; st.session_state.pop(f"rendered_for_{st.session_state.selected_file}", None)
         st.rerun()
     if st.session_state.selected_file:
-        st.caption(f"Editing: `{st.session_state.selected_file}`")
+        st.caption(f"Upravuje sa: `{st.session_state.selected_file}`")
         file_ext = Path(st.session_state.selected_file).suffix.lower()
         lang_map = {".html": "html", ".css": "css", ".js": "javascript", ".py":"python", ".md": "markdown", ".json": "json", ".jsx":"javascript", ".vue":"vue", ".svelte":"svelte", ".txt":"text"}
         language = lang_map.get(file_ext)
-        edited_content = st.text_area("Code Editor", value=st.session_state.file_content, height=400, key=editor_key, label_visibility="collapsed", args=(language,))
+        edited_content = st.text_area("Editor kódu", value=st.session_state.file_content, height=400, key=editor_key, label_visibility="collapsed", args=(language,))
         if edited_content != st.session_state.file_content:
-             if st.button("💾 Save Manual Changes"):
+             if st.button("💾 Uložiť manuálne zmeny"):
                 if save_file_content(st.session_state.selected_file, edited_content):
-                    st.session_state.file_content = edited_content; st.success(f"Saved: `{st.session_state.selected_file}`")
+                    st.session_state.file_content = edited_content; st.success(f"Uložené: `{st.session_state.selected_file}`")
                     st.session_state.rendered_html = ""; st.session_state.pop(f"rendered_for_{st.session_state.selected_file}", None)
                     time.sleep(0.5); st.rerun()
-                else: st.error("Failed to save.")
+                else: st.error("Nepodarilo sa uložiť.")
     else:
-        st.info("Select a file to edit.")
-        st.text_area("Code Editor", value="Select a file...", height=400, key="editor_placeholder", disabled=True, label_visibility="collapsed")
+        st.info("Vyberte súbor na úpravu.")
+        st.text_area("Editor kódu", value="Vyberte súbor...", height=400, key="editor_placeholder", disabled=True, label_visibility="collapsed")
 
 with tab2: # --- Preview Tab (Add New Window Link) ---
-    st.header("👀 Live Preview")
+    st.header("👀 Živý náhľad")
     st.markdown("---")
     css_applied_info = "" # Initialize to prevent NameError
 
@@ -272,18 +272,18 @@ with tab2: # --- Preview Tab (Add New Window Link) ---
                             if head_match:
                                 injection_point = head_match.start()
                                 final_html = final_html[:injection_point] + style_tag + final_html[injection_point:]
-                                css_applied_info = f"🎨 Injected `{CSS_FILENAME}`." # Set only if successful
+                                css_applied_info = f"🎨 Vložené `{CSS_FILENAME}`." # Set only if successful
                     st.session_state.rendered_html = final_html
                     st.session_state[rendered_marker_key] = current_file_content_for_preview
                     # Info message moved below display logic
                 else:
-                    st.warning(f"Could not read `{st.session_state.selected_file}` for preview.")
-                    st.session_state.rendered_html = "Error reading file for preview."
+                    st.warning(f"Nepodarilo sa načítať `{st.session_state.selected_file}` pre náhľad.")
+                    st.session_state.rendered_html = "Chyba pri čítaní súboru pre náhľad."
                     st.session_state.pop(rendered_marker_key, None)
 
             # --- Display Preview & New Window Link ---
-            if st.session_state.rendered_html and "Error reading file" not in st.session_state.rendered_html:
-                st.info(f"Previewing: `{st.session_state.selected_file}`")
+            if st.session_state.rendered_html and "Chyba pri čítaní súboru" not in st.session_state.rendered_html:
+                st.info(f"Náhľad súboru: `{st.session_state.selected_file}`")
                 st.markdown("---")
 
                 # --- NEW: Button/Link to Open in New Window ---
@@ -292,45 +292,45 @@ with tab2: # --- Preview Tab (Add New Window Link) ---
                     encoded_html = urllib.parse.quote(st.session_state.rendered_html)
                     data_uri = f"data:text/html;charset=utf-8,{encoded_html}"
                     # Display as a link (browsers usually handle data URIs opening in new tabs)
-                    st.markdown(f'<a href="{data_uri}" target="_blank" rel="noopener noreferrer"><button>🚀 Open Preview in New Window</button></a>', unsafe_allow_html=True)
-                    st.caption("_(Uses Data URI - best for self-contained HTML/CSS/JS)_")
+                    st.markdown(f'<a href="{data_uri}" target="_blank" rel="noopener noreferrer"><button>🚀 Otvoriť náhľad v novom okne</button></a>', unsafe_allow_html=True)
+                    st.caption("_(Používa Data URI - najlepšie pre samostatné HTML/CSS/JS)_")
                 except Exception as e:
-                    st.warning(f"Could not create 'Open in New Window' link: {e}")
+                    st.warning(f"Nepodarilo sa vytvoriť odkaz 'Otvoriť v novom okne': {e}")
                 # --- End New Window Link ---
 
 
                 st.components.v1.html(st.session_state.rendered_html, height=600, scrolling=True)
                 st.markdown("---")
                 # --- Caption Logic ---
-                preview_note = "Note: Basic HTML Preview."
+                preview_note = "Poznámka: Základný HTML náhľad."
                 if "<script src=\"https://unpkg.com/@babel/standalone" in st.session_state.rendered_html:
-                     preview_note = "Note: Preview uses CDN links & in-browser transpiling for simple React demos."
+                     preview_note = "Poznámka: Náhľad používa CDN odkazy a transpiláciu v prehliadači pre jednoduché React ukážky."
                 # Re-check css_applied_info based on rendered content for caption consistency
                 # This assumes css_applied_info was correctly set during the relevant render pass
                 # A more robust way might be to store the injection status in session state too.
                 # Simple check: if style tag is present (might be inaccurate if original HTML had one)
-                if not is_react_cdn_preview and f"Injected `{CSS_FILENAME}`" in css_applied_info: # Check the flag set during render
+                if not is_react_cdn_preview and f"Vložené `{CSS_FILENAME}`" in css_applied_info: # Check the flag set during render
                      preview_note += f" {css_applied_info}"
                 st.caption(preview_note)
 
-            elif "Error reading file" in str(st.session_state.rendered_html):
-                 st.error("Preview failed: Could not read the HTML file.")
+            elif "Chyba pri čítaní súboru" in str(st.session_state.rendered_html):
+                 st.error("Náhľad zlyhal: Nepodarilo sa načítať HTML súbor.")
 
         else: # File selected, but not HTML
-            st.info(f"Preview is available for HTML files only. Selected: `{st.session_state.selected_file}`")
+            st.info(f"Náhľad je dostupný iba pre HTML súbory. Vybraný: `{st.session_state.selected_file}`")
             st.session_state.rendered_html = ""
             st.session_state.pop(f"rendered_for_{st.session_state.selected_file}", None)
     else: # No file selected
-        st.info("Select an HTML file from the 'Workspace' tab to see a preview.")
+        st.info("Vyberte HTML súbor z karty 'Pracovný priestor' pre zobrazenie náhľadu.")
         st.session_state.rendered_html = ""
 
 # --- Footer / Warnings (Sidebar) --- (Keep as before) ---
 st.sidebar.markdown("---")
 st.sidebar.warning("""
-    **Prototype Limitations & Warnings:**
-    - **Security:** AI can modify files directly! Use locally & cautiously. **Do not expose publicly.**
-    - **File Operations:** Basic create/update/delete. Errors possible.
-    - **Preview:** Basic HTML rendering. Attempts `style.css` injection. Can render simple React CDN examples. **No build process, linked JS/CSS (unless injected), etc.** "Open in New Window" uses Data URI and has limitations (URL length, no relative paths for images).
-    - **AI Reliability:** AI might misunderstand, generate invalid JSON/code, or fail updates. Prompt tuning helps. Errors are caught, but file ops may fail.
-    - **State:** Lost on browser refresh.
+    **Obmedzenia prototypu a varovania:**
+    - **Bezpečnosť:** AI môže priamo upravovať súbory! Používajte lokálne a opatrne. **Nezverejňujte verejne.**
+    - **Operácie so súbormi:** Základné vytvorenie/aktualizácia/vymazanie. Možné chyby.
+    - **Náhľad:** Základné vykresľovanie HTML. Pokúša sa vložiť `style.css`. Dokáže vykresliť jednoduché príklady React CDN. **Žiadny build proces, prepojené JS/CSS (pokiaľ nie sú vložené), atď.** "Otvoriť v novom okne" používa Data URI a má obmedzenia (dĺžka URL, žiadne relatívne cesty pre obrázky).
+    - **Spoľahlivosť AI:** AI môže nepochopiť, generovať neplatný JSON/kód alebo zlyhať pri aktualizáciách. Ladenie promptov pomáha. Chyby sú zachytené, ale operácie so súbormi môžu zlyhať.
+    - **Stav:** Stratí sa pri obnovení prehliadača.
 """, icon="⚠️")
