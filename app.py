@@ -28,7 +28,7 @@ try:
         st.error("🔴 Google API kľúč nenájdený. Prosím, uistite sa, že GOOGLE_API_KEY je nastavený vo vašom .env súbore.")
         st.stop()
     genai.configure(api_key=api_key)
-    model_name = os.getenv("GEMINI_MODEL", "gemini-1.5-flash-latest") # Using a potentially faster model
+    model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-pro-exp-03-25") # Using a potentially faster model
     model = genai.GenerativeModel(model_name)
     st.sidebar.caption(f"Používaný model: `{model_name}`")
 except Exception as e:
